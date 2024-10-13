@@ -1,0 +1,692 @@
+/**
+ * @fileOverview 游密 IM SDK for Web Demo
+ * @author benz@youme.im
+ * @date 2018/8/1
+ *
+ * 每位工程师都有保持代码优雅的义务
+ * each engineer has a duty to keep the code elegant
+ */
+
+// window.vc = new VConsole({
+//     onReady:
+(function () {
+        // vc.hideSwitch();
+        var ERROR_NAME = {
+            // 通用
+            NotLoginError: '请先登录',
+            InvalidParamError: '无效的参数',
+            InvalidLoginError: '无效的登录',
+            UsernameOrTokenError: '用户名或token错误',
+            LoginTimeoutError: '登录超时',
+            ServiceOverloadError: '服务过载，消息传输过于频繁',
+            MessageTooLongError: '消息长度超出限制，最大长度1400',
+            // 录音
+            UnsupportedVoiceFormatError: '不支持的音频格式',
+            DeviceNotSupportedError: '设备不支持录音',
+            AlreadyReadyError: '已经录过音或加载过音频了，要重新录音请重新 new 一个新实例',
+            CanceledError: '已经取消了录音或录音出错了，要重新录音请重新 new 一个新实例',
+            NotAllowedError: '没有录音权限',
+            RecorderNotStartedError: '没有启动录音却企图完成录音',
+            RecorderBusyError: '录音系统正忙，可能有其他实例正在录音中',
+            RecordTooShortError: '录音时长太短',
+            WXObjectIsEmptyError: '未传入微信wx对象',
+            WXObjectNoConfigError: '微信wx对象尚未初始化',
+            WXNoPermissionError: '微信wx对象没有提供录音相关接口权限'
+        };
+
+        var global_date = "";
+        var global_i = 1;
+
+// 格式化日对象
+        function getNowDate() {
+            var date = new Date();
+            var sign2 = ":";
+            var year = date.getFullYear() // 年
+            var month = date.getMonth() + 1; // 月
+            var day = date.getDate(); // 日
+            var hour = date.getHours(); // 时
+            var minutes = date.getMinutes(); // 分
+            var seconds = date.getSeconds() //秒
+            var weekArr = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期天'];
+            var week = weekArr[date.getDay()];
+            // 给一位数的数据前面加 “0”
+            if (month >= 1 && month <= 9) {
+                month = "0" + month;
+            }
+            if (day >= 0 && day <= 9) {
+                day = "0" + day;
+            }
+            if (hour >= 0 && hour <= 9) {
+                hour = "0" + hour;
+            }
+            if (minutes >= 0 && minutes <= 9) {
+                minutes = "0" + minutes;
+            }
+            if (seconds >= 0 && seconds <= 9) {
+                seconds = "0" + seconds;
+            }
+            return month.toString() + day.toString() + hour.toString() + minutes.toString() + "-" + seconds.toString();
+        }
+
+        function getErrorMsg(errorName) {
+            return ERROR_NAME[errorName] || errorName;
+        }
+
+        // 用 id 获取 dom
+        function E(id) {
+            return document.getElementById(id);
+        }
+
+        // 聊天框的各种 html 模板
+        var noticeTpl = E('tpl-notice').innerHTML;
+        var leftTextTpl = E('tpl-left-text').innerHTML;
+        var rightTextTpl = E('tpl-right-text').innerHTML;
+        var leftFileTpl = E('tpl-left-file').innerHTML;
+        var rightFileTpl = E('tpl-right-file').innerHTML;
+        var leftVoiceTpl = E('tpl-left-voice').innerHTML;
+        var rightVoiceTpl = E('tpl-right-voice').innerHTML;
+
+        // 聊天框 Dom
+        var chatDom = E('chat');
+
+        // 所有消息的列表，{ id: Message }
+        var msgHash = {};
+
+        // 添加一条消息到聊天框
+        function addDomToList(html, id) {
+            var li = document.createElement('li');
+            li.innerHTML = html;
+            if (id) {
+                li.setAttribute('data-id', id);
+            }
+            chatDom.appendChild(li);
+
+            // 超过 300 条，删除第一条
+            if (chatDom.childNodes.length > 300) {
+                var first = chatDom.firstChild;
+
+                try{
+                    var dataId = first.getAttribute('data-id');
+                    if (dataId && msgHash.hasOwnProperty(dataId)) {
+                        delete msgHash[dataId];
+                    }
+                    chatDom.removeChild(first);
+                }catch (e) {
+                }
+
+            }
+
+            // 页面滚动到底部
+            li.scrollIntoView(true);
+        }
+
+        // 添加提示消息
+        function addNotice(text) {
+            var html = noticeTpl.replace('{{text}}', text);
+            addDomToList(html);
+        }
+
+        // 打出 console
+        /*var oLog = window.console.log;
+        window.console.log = function (message) {
+            oLog.apply(window.console, arguments);
+            addNotice(message.toString());
+        };*/
+
+        const fileInput = document.getElementById("picture");
+        fileInput.onchange = (e) => {
+            // 保证登录成功后调用
+            var file = e.target.files[0];
+            var blob = new Blob([file], {type: file.type});
+            console.log(blob);
+
+            var imgMsg = new FileMessage(2, file.name, "这是图片消息需要传输的额外消息");
+            imgMsg.uploadSingleFile(blob).then(() => {
+                console.log('uploadSingleFile ok');
+            });
+            yim.sendToUser(curSendToUserId, imgMsg).catch(function (e) {
+                console.log(e);
+                addNotice(getErrorMsg(e.name));
+            });
+        }
+
+        // 添加文本消息
+        function addTextItem(msgObj) {
+            var html = msgObj.isFromMe ? rightTextTpl : leftTextTpl;
+            html = html.replace(/{{name}}/g, msgObj.senderId)
+                .replace('{{text}}', msgObj.message.getText() + '(' + msgObj.message.getAttachParam() + ')');
+            addDomToList(html);
+        }
+
+        // 添加文件消息
+        function addFileItem(msgObj) {
+            var html = msgObj.isFromMe ? rightFileTpl : leftFileTpl;
+            var downloadurl = "";
+            var img_ext_arr = ["jpg","jpeg","gif","png","bmp"];
+            var ext = "";
+            var fileName = "";
+
+            var file_conntent = msgObj.message.getContent();
+            console.log(msgObj);
+            if(file_conntent!=""){
+                var file_json = JSON.parse(file_conntent);
+                console.log(file_json);
+                downloadurl = file_json.downloadurl;
+                if(downloadurl.substring(0,2)!="//"){
+                    file_json = JSON.parse(downloadurl);
+                    downloadurl = file_json.downloadurl;
+                }
+                if(typeof file_json.extension != "undefined"){
+                    fileName = file_json.filename;
+                    ext = file_json.extension;
+                    ext = ext.toLowerCase();
+                }
+                console.log(file_json.comment);
+                if(typeof file_json.comment != "undefined"){
+                    if(typeof file_json.comment=="string"){
+                        var comment_json = JSON.parse(file_json.comment);
+                    }else{
+                        var comment_json = file_json.comment;
+                    }
+
+                    fileName = comment_json.FileName;
+                    if(typeof comment_json.Extension != "undefined"){
+                        ext = comment_json.Extension;
+                        ext = ext.toLowerCase();
+                    }
+                }
+            }else{
+                console.log("conntent is empty");
+                console.log(msgObj);
+            }
+
+            if(ext!="" && in_array(ext,img_ext_arr)){
+                var file_html = '<a target="_blank" href="' + downloadurl + '"><img style="width: 100px;height: 80px; margin-top: 6px;" src="' + downloadurl + '" /></a>';
+                html = html.replace(/{{name}}/g, msgObj.senderId)
+                    .replace('{{file}}', file_html);
+            }else{
+                var file_html = '<a target="_blank" href="' + downloadurl + '">' + fileName + '</a>';
+                html = html.replace(/{{name}}/g, msgObj.senderId)
+                    .replace('{{file}}', file_html);
+            }
+            addDomToList(html);
+        }
+
+        function in_array(val, arr) {
+            for (var i = 0,len = arr.length; i < len; i++) {
+                if (arr[i] == val) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 添加语音消息
+        function addVoiceItem(msgObj) {
+            var html = msgObj.isFromMe ? rightVoiceTpl : leftVoiceTpl;
+            html = html.replace(/{{name}}/g, msgObj.senderId)
+                .replace(/{{time}}/g, Math.round(msgObj.message.getDuration()))
+                .replace(/{{id}}/g, msgObj.serverId)
+                .replace(/{{width}}/g, Math.round(msgObj.message.getDuration() * 10) + 30);
+            addDomToList(html, msgObj.serverId);
+            console.log("voice message extra param:" + msgObj.message.getExtra())
+
+            // 绑定语音消息 Dom 的点击事件（播放）
+            E('btn-voice-' + msgObj.serverId).onclick = function () {
+                var msg = msgHash[msgObj.serverId].message;
+                if (msg.isPlaying()) {
+                    msg.stop();
+                } else {
+                    msg.play();
+                }
+            };
+
+            // 绑定 msg 的播放和停止事件
+            msgObj.message.on('play', function () {
+                E('btn-voice-' + msgObj.serverId).className += ' voice-playing';
+            });
+            msgObj.message.on('end-play', function () {
+                var b = E('btn-voice-' + msgObj.serverId);
+                b.className = b.className.replace(/\s*voice-playing/g, '');
+            });
+
+            // 把 msgObj 存起来
+            msgHash[msgObj.serverId] = msgObj;
+        }
+
+        // 添加消息（判断消息类型并选择 addTextItem 或 addVoiceItem）
+        function addChatItem(msgObj) {
+            switch (msgObj.message.getType()) {
+                case 'text':
+                    addTextItem(msgObj);
+                    break;
+                case 'voice':
+                    addVoiceItem(msgObj);
+                    // msgObj.message.getExtra(); // 获取语音消息所携带的额外文本消息
+                    break;
+                case 'file':
+                    addFileItem(msgObj);
+                    break;
+                default:
+                    addNotice('收到未知消息类型：' + msgObj.message.getType());
+            }
+        }
+
+        // 私聊对象 用户ID
+        var curSendToUserId = '';
+        // 记录当前房间号
+        var curRoomId = '';
+
+        // 初始化游密 IM SDK
+        var yim = new YIM.default({
+            appKey: 'YOUMEBC2B3171A7A165DC10918A7B50A4B939F2A187D0',
+            useMessageType: [TextMessage, VoiceMessage, FileMessage]
+        });
+
+        // 初始化录音插件
+        VoiceMessage.registerRecorder([WechatRecorder, MP3Recorder, AMRRecorder]);
+
+        // 初始化微信录音功能
+        if (WechatRecorder.isWechat()) {
+            WechatRecorder.setWXObject(wx);
+
+            // 自制简单的 jsonp 请求，以获取微信 JS-SDK 所需的数据
+            (function () {
+                window._yimcallback = function (json) {
+                    wx.config({
+                        debug: false,
+                        appId: json['appid'], // 必填，公众号的唯一标识
+                        timestamp: json['time'], // 必填，生成签名的时间戳
+                        nonceStr: json['nonce'], // 必填，生成签名的随机串
+                        signature: json['sign'],// 必填，签名
+                        jsApiList: [
+                            'startRecord',
+                            'stopRecord',
+                            'onVoiceRecordEnd',
+                            'playVoice',
+                            'pauseVoice',
+                            'stopVoice',
+                            'onVoicePlayEnd',
+                            'uploadVoice',
+                            'downloadVoice'
+                        ] // 必填，需要使用的JS接口列表
+                    });
+                    addNotice('微信 config 已调用');
+                };
+                var script = document.createElement('script');
+                script.src = '//wxtest3.youme.im/api/signatureinfo?url=' + encodeURIComponent(location.href) + '&callback=_yimcallback';
+                script.async = true;
+                var head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
+                head.insertBefore(script, head.firstChild);
+            })();
+        }
+
+        // 初始化录音授权，此步骤可省略。
+        // 若省略此步，调用 startRecord() 的时候，浏览器可能会弹出麦克风授权框
+        VoiceMessage.initRecorder().then(function () {
+            addNotice('初始化录音完毕。');
+        }).catch(function (e) {
+            addNotice(getErrorMsg(e.name));
+        });
+
+        // 快捷填写测试账号
+        var testUsers = {
+            sanji: '10001',
+            zoro3000: '10002',
+            youme_test201701: '201701',
+            youme_test201702: '201702'
+        };
+        E('login-sanji').onclick
+            = E('login-zoro3000').onclick
+            = E('login-youme_test201701').onclick
+            = E('login-youme_test201702').onclick
+            = function (e) {
+            var userId = e.target.value;
+            var token = testUsers[userId];
+            E('login-user-id').value = userId;
+            E('login-user-token').value = token;
+            if(userId=='sanji'){
+                E('sendto-user-id').value = 'zoro3000';
+            }
+            if(userId=='zoro3000' || userId=='youme_test201701' || userId=='youme_test201702'){
+                E('sendto-user-id').value = 'sanji';
+            }
+        };
+
+        // 登录并加入房间
+        var login = function () {
+            var userId = E('login-user-id').value;
+            var token = E('login-user-token').value;
+            curSendToUserId = E('sendto-user-id').value;
+            E('text-user-id').value = curSendToUserId;
+
+            if (!userId) {
+                alert('请输入用户ID。');
+                return;
+            }
+            if (!token) {
+                alert('请输入token。');
+                return;
+            }
+            if (!curSendToUserId) {
+                alert('请输入私聊对象。');
+                return;
+            }
+
+            // 登录
+            yim.login(userId, token).catch(function (e) {
+                alert('登录失败：' + getErrorMsg(e.name));
+                console.log(e);
+                return false;
+            });
+
+
+        };
+        E('btn-login').onclick = login;
+        E('login-user-id').onkeydown = function (e) {
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                if (e.key === 'Enter' && !e.target.value) {
+                    alert('用户ID 不能为空');
+                }
+                E('login-user-token').focus();
+                E('login-user-token').select();
+            }
+        };
+        E('login-user-token').onkeydown = function (e) {
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                if (e.key === 'Enter' && !e.target.value) {
+                    alert('Token 不能为空');
+                }
+                E('login-room-id').focus();
+                E('login-room-id').select();
+            }
+        };
+        E('sendto-user-id').onkeydown = function (e) {
+            if (e.key === 'Enter') {
+                login();
+            }
+            if (e.key === 'Tab') {
+                E('btn-login').focus();
+            }
+        };
+
+        // 退出登录
+        E('btn-user-logout').onclick = function () {
+            yim.logout();
+            window.location.reload();
+        };
+
+
+        // 切换到文字输入
+        E('btn-to-text').onclick = function () {
+            E('voice-ctrl').style.display = 'none';
+            E('text-ctrl').style.display = 'flex';
+        };
+
+        // 切换到语音输入
+        E('btn-to-voice').onclick = function () {
+            E('voice-ctrl').style.display = 'flex';
+            E('text-ctrl').style.display = 'none';
+        };
+
+        // 发送文字消息
+        var sendText = function () {
+            var text = E('text-msg').value;
+            var msg = new TextMessage(text, "atta");
+            yim.sendToUser(curSendToUserId, msg).catch(function (e) {
+                addNotice(getErrorMsg(e.name));
+            });
+            E('text-msg').value = '';
+            E('text-msg').focus();
+
+        };
+
+
+
+        E('btn-send').onclick = sendText;
+        E('text-msg').onkeydown = function (e) {
+            if (e.key === 'Enter') {
+                sendText();
+            }
+        };
+
+
+        function queryPrivateHistoryMessage(msgList) {
+                console.log(msgList);
+                var l = msgList.length;
+                if(l>0){
+                    for (var i= 0;i<l;i++)
+                    {
+                        addChatItem(msgList[i]);
+                    }
+                }
+        }
+
+        function deleteContact(res) {
+            if(res["ErrorCode"]==0){
+                yim.getHistoryContact(getContact);
+                alert("删除联系人成功！");
+            }
+        }
+
+        function getContact(contactList){
+            var l = contactList.length;
+            var temp_arr = []
+            if(l>0){
+                for (var i= 0;i<l;i++)
+                {
+                    temp_arr.push('<li>' + contactList[i] + '</li>');
+                }
+                E('contact-list').innerHTML = temp_arr.join("");
+                var lis = E('contact-list').getElementsByTagName('li');
+                for (var i= 0;i<lis.length;i++)
+                {
+                    lis[i].onclick = function (e){
+                        e.preventDefault();
+                        var msg = "您确定要删除吗，删除后数据将不可恢复？";
+                        if (!confirm(msg)==true){
+                            return false;
+                        }
+                        yim.deleteHistoryContact(this.innerHTML,deleteContact);
+                    }
+                }
+            }else{
+                E('contact-list').innerHTML = "";
+            }
+
+
+        }
+
+
+        // 录音实例
+        var voice;
+
+        // 按下录音键（按住说话）
+        var holdDown = function (e) {
+            isInCancelArea = false;
+
+            var extraText = '这里是语音消息需要传输的额外消息';
+            voice = new VoiceMessage(extraText);
+            // 也可以 voice.setExtra(extraText);  同时存在voice.getExtra()来获取额外的文本信息;
+
+            E('btn-hold-speak').className = 'active';
+            voice.startRecord().then(function () {
+                E('btn-hold-speak').className = 'active speaking';
+                E('btn-hold-speak-text').innerHTML = '松开 完成';
+                E('speak-display-recording').style.display = 'block';
+                E('speak-display-leave-to-cancel').style.display = 'none';
+            }).catch(function (e) {
+                if (e.name !== 'RecordTooShortError') {
+                    // 'RecordTooShortError' 错误将在 finishRecord() 中报错，这里不再重复
+                    addNotice(getErrorMsg(e.name));
+                }
+            });
+
+            e.preventDefault();
+        };
+        E('btn-hold-speak').addEventListener('touchstart', holdDown);
+        E('btn-hold-speak').addEventListener('mousedown', holdDown);
+
+        // 手指（或鼠标）在界面上移动
+        var isInCancelArea = false;
+        var inCancel = function () {
+            if (isInCancelArea) {
+                return;
+            }
+            isInCancelArea = true;
+            E('speak-display-recording').style.display = 'none';
+            E('speak-display-leave-to-cancel').style.display = 'block';
+            E('btn-hold-speak-text').innerHTML = '松开 取消';
+        };
+        var inFinish = function () {
+            if (!isInCancelArea) {
+                return;
+            }
+            isInCancelArea = false;
+            E('speak-display-recording').style.display = 'block';
+            E('speak-display-leave-to-cancel').style.display = 'none';
+            E('btn-hold-speak-text').innerHTML = '松开 完成';
+        };
+        var inWhere = function (pageY) {
+            if (pageY < window.innerHeight * 0.83) {
+                inCancel();
+            } else {
+                inFinish();
+            }
+        };
+        E('btn-hold-speak').addEventListener('touchmove', function (e) {
+            inWhere(e.touches[0].pageY);
+            e.preventDefault();
+        });
+        E('btn-hold-speak').addEventListener('mousemove', function (e) {
+            inWhere(e.pageY);
+            e.preventDefault();
+        });
+
+        // 在取消区域松手
+        var holdUpCancel = function () {
+            E('btn-hold-speak').className = '';
+            E('btn-hold-speak-text').innerHTML = '按住 说话';
+            // 取消录音
+            voice.cancelRecord();
+        };
+
+        // 在完成区域松手
+        var holdUpFinish = function () {
+            E('btn-hold-speak').className = '';
+            E('btn-hold-speak-text').innerHTML = '按住 说话';
+            // 完成录音
+            voice.finishRecord(true);
+
+            // 除了这样写，也可以 voice.finishRecord().then( /* yim.sendToRoom(...) */ ).catch( /* e.name */ );
+            if (voice.isError()) {
+                addNotice(getErrorMsg(voice.getErrorName()));
+            } else {
+                yim.sendToUser(curSendToUserId, voice).catch(function (e) {
+                    addNotice(getErrorMsg(e.name));
+                });
+            }
+        };
+
+        var holdUpWhere = function (e) {
+            if (isInCancelArea) {
+                holdUpCancel();
+            } else {
+                holdUpFinish();
+            }
+            e.preventDefault();
+        };
+        E('btn-hold-speak').addEventListener('touchend', holdUpWhere);
+        E('btn-hold-speak').addEventListener('mouseup', holdUpWhere);
+
+        // 事件绑定：已登录
+        yim.on('account.login', function () {
+            E('user-logged').style.display = 'block';
+            E('user-no-log').style.display = 'none';
+            E('login-form').style.display = 'none';
+            E('history-contact').style.display = 'block';
+            E('dsp-user-name').innerHTML = yim.getMyUserId();
+            addNotice('已登录到 ' + yim.getMyUserId());
+
+            var lastMsgid = 0;//951239706929279589
+            /**
+             * 获取私聊历史消息记录列表
+             * @param userId 私聊对象用户ID
+             * @param count 消息数量
+             * @param direction 历史消息排序方向 0：按时间戳升序 1：按时间戳逆序
+             * @param lastMsgid 上一分页最后last_msgid值,第一页可传空
+             * @param callback 查询私聊记录回调
+             */
+            yim.queryPrivateHistoryMessageByLastMsgid(E('text-user-id').value, 30, 0, lastMsgid,queryPrivateHistoryMessage).then(function() {
+
+                //获取最近联系人
+                yim.getHistoryContact(getContact);
+
+            }).catch(function (e) {
+                addNotice(getErrorMsg(e.name));
+            });
+
+        });
+
+        // 事件绑定：正在登录中
+        yim.on('account.logging', function () {
+            E('user-logged').style.display = 'none';
+            E('user-no-log').style.display = 'none';
+            E('btn-login').setAttribute('disabled', true);
+            E('btn-login').value = '登录中...';
+        });
+
+        // 事件绑定：退出登录
+        yim.on('account.logout', function () {
+            E('user-logged').style.display = 'none';
+            E('user-no-log').style.display = 'block';
+            E('login-form').style.display = 'flex';
+            E('btn-login').removeAttribute('disabled');
+            E('btn-login').value = '登录';
+            addNotice('退出登录');
+        });
+
+        // 事件绑定：登录失败
+        yim.on('account.error:*', function (eventName, e) {
+            E('user-logged').style.display = 'none';
+            E('user-no-log').style.display = 'block';
+            E('login-form').style.display = 'flex';
+            E('btn-login').removeAttribute('disabled');
+            E('btn-login').value = '登录';
+            addNotice('登录失败：' + getErrorMsg(e.name));
+        });
+
+        // 事件绑定：被踢下线
+        yim.on('account.kickoff', function () {
+            alert('你被踢下线了');
+            addNotice('你被踢下线了');
+            E('user-logged').style.display = 'none';
+            E('user-no-log').style.display = 'block';
+            E('login-form').style.display = 'flex';
+            E('btn-login').removeAttribute('disabled');
+            E('btn-login').value = '登录';
+        });
+
+
+
+        // 事件绑定：发送/接收了消息
+        yim.on('message:*', function (eventName, msgObj) {
+            //localStorage.setItem("ymPrivateChatMaxServerId-"+yim.getMyUserId(),msgObj.serverId);
+            if(msgObj.chatType=="user" && (msgObj.senderId==E('sendto-user-id').value || msgObj.senderId==E('login-user-id').value) ){
+                addChatItem(msgObj);
+            }
+            //console.log(msgObj);
+        });
+
+        // 打开 vConsole
+        E('v-console-switch').onclick = function () {
+            if (window.vc) {
+                window.vc.show();
+            }
+        };
+
+        // 版本
+        addNotice('Ver 8');
+
+    }
+)();
